@@ -5,6 +5,9 @@ license: CC BY-NC-SA 3.0
 """
 
 import pytz
+import json
+import hashlib
+from pathlib import Path
 import requests
 from time import sleep
 from random import randint
@@ -19,10 +22,20 @@ debug = False
 
 verify_cert = False
 
-def login(s: requests.Session, username, password):
+def login(s: requests.Session, username, password, cookie_file: Path):
     # r = s.get(
     #     "https://app.ucas.ac.cn/uc/wap/login?redirect=https%3A%2F%2Fapp.ucas.ac.cn%2Fsite%2FapplicationSquare%2Findex%3Fsid%3D2")
     # print(r.text)
+    if cookie_file.exists():
+        cookie = json.loads(cookie_file.read_text())
+        s.cookies = requests.utils.cookiejar_from_dict(cookie)
+        # 测试cookie是否有效
+        if get_daily(s) == False:
+            print("cookie失效，进入登录流程")
+        else:
+            print("cookie有效，跳过登录环节")
+            return
+
     payload = {
         "username": username,
         "password": password
@@ -33,22 +46,24 @@ def login(s: requests.Session, username, password):
     if r.json().get('m') != "操作成功":
         print(r.text)
         print("登录失败")
-        exit(1)
+        # exit(1)
     else:
         print("登录成功")
-
+        with open(cookie_file, 'w', encoding='u8') as f:
+            f.write(json.dumps(requests.utils.dict_from_cookiejar(r.cookies)))
+            print("cookies 保存完成，文件名为 {}".format(cookie_file))
 
 def get_daily(s: requests.Session):
     daily = s.get("https://app.ucas.ac.cn/ncov/api/default/daily?xgh=0&app_id=ucas")
     # info = s.get("https://app.ucas.ac.cn/ncov/api/default/index?xgh=0&app_id=ucas")
+    
+    if '操作成功' not in daily.text:
+        # 会话无效，跳转到了登录页面
+        print("会话无效")
+        return False
+    
     j = daily.json()
-    d = j.get('d', None)
-    if d:
-        return daily.json()['d']
-    else:
-        print("获取昨日信息失败")
-        exit(1)
-
+    return j.get('d') if j.get('d', False) else False
 
 def submit(s: requests.Session, old: dict):
     new_daily = {
@@ -103,7 +118,6 @@ def submit(s: requests.Session, old: dict):
 
     if debug:
         from urllib.parse import parse_qs, unquote
-        import json
         print("昨日信息:", json.dumps(old, ensure_ascii=False, indent=2))
         print("提交信息:",
               json.dumps(parse_qs(unquote(r.request.body), keep_blank_values=True), indent=2, ensure_ascii=False))
@@ -127,6 +141,7 @@ def message(key, title, body):
 
 
 def report(username, password):
+    cookie_file_name = Path("{}.json".format(hashlib.sha512(username.encode()).hexdigest()[:8]))
     s = requests.Session()
     s.verify = verify_cert
     header = {
@@ -139,7 +154,7 @@ def report(username, password):
         print("\r等待{}秒后填报".format(i), end='')
         sleep(1)
 
-    login(s, username, password)
+    login(s, username, password, cookie_file_name)
     yesterday = get_daily(s)
     submit(s, yesterday)
 
